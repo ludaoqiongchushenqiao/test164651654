@@ -47,6 +47,9 @@ function createHarness({ cacheEnabled = true, events, contentType = '' } = {}) {
 
     const service = {
         async processRequest(request) {
+            // SillyTavern awaits preset/payload preparation before sendRequest
+            // starts the fetch. This ensures the scope survives that boundary.
+            await Promise.resolve();
             const response = await host.fetch('/api/backends/chat-completions/generate', {
                 method: 'POST',
                 body: JSON.stringify(request),
@@ -66,9 +69,11 @@ function createHarness({ cacheEnabled = true, events, contentType = '' } = {}) {
                         const match = /^data:\s?(.*)\r?$/.exec(line);
                         if (!match || match[1] === '[DONE]') continue;
                         const event = JSON.parse(match[1]);
-                        const delta = event.choices?.[0]?.delta || {};
+                        const delta = cacheEnabled
+                            ? (event.delta || {})
+                            : (event.choices?.[0]?.delta || {});
                         // Mimic ST's cache-enabled custom-source branch (expects
-                        // Anthropic delta.text) versus its normal parser.
+                        // top-level Anthropic delta.text) versus its normal parser.
                         text += cacheEnabled ? (delta.text || '') : (delta.content || '');
                         yield { text, swipes: [], state: {} };
                     }
@@ -135,11 +140,11 @@ test('does not rewrite an explicitly non-SSE response', async () => {
     assert.equal(chunks.at(-1).text, '');
 });
 
-test('preserves already Anthropic-shaped text and maps reasoning to thinking', async () => {
+test('maps OpenAI content and reasoning into top-level Anthropic delta fields', async () => {
     const { context } = createHarness({
         cacheEnabled: true,
         events: [
-            { choices: [{ index: 0, delta: { text: 'OK', reasoning: 'reason' } }] },
+            { choices: [{ index: 0, delta: { content: 'OK', reasoning: 'reason' } }] },
         ],
     });
     const chunks = await collect(context.streamBackendForward, request);
