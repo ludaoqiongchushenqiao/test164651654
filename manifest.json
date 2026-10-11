@@ -1,0 +1,12 @@
+{
+  "display_name": "Story Oracle Swipe Compatibility",
+  "loading_order": 110,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "",
+  "author": "local patch",
+  "version": "1.0.0",
+  "homePage": "",
+  "auto_update": false
+}
