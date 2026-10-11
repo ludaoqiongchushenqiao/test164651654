@@ -50,19 +50,23 @@
 
         try {
             const event = JSON.parse(match[2]);
-            const delta = event?.choices?.[0]?.delta;
-            if (!delta || typeof delta !== 'object') return line;
+            const choiceDelta = event?.choices?.[0]?.delta;
+            if (!choiceDelta || typeof choiceDelta !== 'object') return line;
+
+            if (!event.delta || typeof event.delta !== 'object') {
+                event.delta = {};
+            }
 
             let changed = false;
-            if (typeof delta.content === 'string' && typeof delta.text !== 'string') {
-                delta.text = delta.content;
+            if (typeof choiceDelta.content === 'string' && typeof event.delta.text !== 'string') {
+                event.delta.text = choiceDelta.content;
                 changed = true;
             }
-            if (typeof delta.reasoning === 'string' && typeof delta.thinking !== 'string') {
-                delta.thinking = delta.reasoning;
+            if (typeof choiceDelta.reasoning === 'string' && typeof event.delta.thinking !== 'string') {
+                event.delta.thinking = choiceDelta.reasoning;
                 changed = true;
-            } else if (typeof delta.reasoning_content === 'string' && typeof delta.thinking !== 'string') {
-                delta.thinking = delta.reasoning_content;
+            } else if (typeof choiceDelta.reasoning_content === 'string' && typeof event.delta.thinking !== 'string') {
+                event.delta.thinking = choiceDelta.reasoning_content;
                 changed = true;
             }
 
