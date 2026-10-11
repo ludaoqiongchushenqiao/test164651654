@@ -17,7 +17,7 @@ If the extension is already installed, use **Manage extensions** to update it or
 
 ## Diagnosis and limits
 
-The reproduced failure had HTTP 200 and a valid SSE `delta.content` answer, but SillyTavern parsed every chunk as empty because Chat Completion Cache was enabled. The first patch missed the fetch because SillyTavern awaited preset preparation before sending it; version 1.2.0 keeps a request-specific marker through that asynchronous step and matches it to the outgoing model/messages. If the provider truly sends no answer text, no client-side adapter can reconstruct one; Story Oracle should continue to show its empty-response notice.
+The reproduced failure had HTTP 200 and a valid SSE `choices[0].delta.content` answer, but SillyTavern's cache parser reads top-level `delta.text` and `delta.thinking`. Version 1.3.0 maps those fields at the expected top level, keeps a request-specific marker through asynchronous preset preparation, and matches it to the outgoing model/messages. If the provider truly sends no answer text, no client-side adapter can reconstruct one; Story Oracle should continue to show its empty-response notice.
 
 To roll back, disable or uninstall this compatibility extension. It does not change SillyTavern settings or the Story Oracle source files.
 
