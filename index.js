@@ -25,6 +25,19 @@
         return request?.stream === true && request?.chat_completion_source === 'custom';
     }
 
+    function requestSignature(request) {
+        try {
+            return JSON.stringify([
+                request?.model,
+                request?.chat_completion_source,
+                request?.custom_url,
+                request?.messages,
+            ]);
+        } catch (_) {
+            return null;
+        }
+    }
+
     function shouldTranslateCustomStream() {
         // This checkbox is the same global flag that SillyTavern's
         // getStreamingReply() consults before selecting its Anthropic parser.
@@ -109,8 +122,16 @@
                 active?.translate &&
                 payload?.stream === true &&
                 payload?.chat_completion_source === 'custom' &&
+                active.signature !== null &&
+                requestSignature(payload) === active.signature &&
                 typeof url === 'string' && /\/api\/backends\/chat-completions\/generate(?:\?|$)/.test(url),
             );
+
+            // Consume the one-request marker before awaiting network I/O, so a
+            // concurrent custom chat cannot inherit this Oracle request's scope.
+            if (isOracleCompletionRequest && synchronousOracleRequest === active) {
+                synchronousOracleRequest = active.previous;
+            }
 
             const response = await currentFetch.call(this, input, init);
             if (!isOracleCompletionRequest || !response.ok) return response;
@@ -185,21 +206,24 @@
             const isTarget = isOracleCall && eligibleRequest(request);
             if (!isTarget) return original.apply(this, args);
 
-            // processRequest reaches fetch synchronously before its first await.
-            // Capture only that request start; never keep a global "active" flag
-            // while the model streams, which could affect unrelated traffic.
             const previous = synchronousOracleRequest;
-            synchronousOracleRequest = {
+            const active = {
                 translate: shouldTranslateCustomStream(),
+                signature: requestSignature(request),
+                previous,
             };
-            let pending;
+            synchronousOracleRequest = active;
+            let result;
             try {
-                pending = original.apply(this, args);
+                // ChatCompletionService.processRequest awaits preset and payload
+                // preparation before sendRequest reaches fetch. Keep the marker
+                // through that work, then clear it once the matching fetch starts.
+                result = await original.apply(this, args);
             } finally {
-                synchronousOracleRequest = previous;
+                if (synchronousOracleRequest === active) {
+                    synchronousOracleRequest = previous;
+                }
             }
-
-            const result = await pending;
             return wrapOracleStream(result);
         }
 
