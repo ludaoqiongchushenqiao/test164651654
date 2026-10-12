@@ -210,6 +210,12 @@
             const isTarget = isOracleCall && eligibleRequest(request);
             if (!isTarget) return original.apply(this, args);
 
+            // Other Tavern extensions can replace window.fetch after this
+            // extension loads. Re-wrap the current fetch immediately before
+            // the Oracle request so the compatibility transform remains in
+            // the active request chain.
+            installFetchHook();
+
             const previous = synchronousOracleRequest;
             const active = {
                 translate: shouldTranslateCustomStream(),
