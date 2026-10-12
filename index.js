@@ -44,14 +44,51 @@
         return host.document?.querySelector('#cc_cache_enabled')?.checked === true;
     }
 
-    function rewriteSseLine(line) {
+    function isOracleCorrectionRequest(request) {
+        const messages = Array.isArray(request?.messages) ? request.messages : [];
+        return messages.some(message => {
+            const content = typeof message?.content === 'string' ? message.content : '';
+            return /<text_to_transform\b/i.test(content) && /<FixedReply\b/i.test(content);
+        });
+    }
+
+    function needsFixedReplyClosure(text) {
+        return /<FixedReply\b/i.test(text) && !/<\/FixedReply\s*>/i.test(text);
+    }
+
+    function makeFixedReplyClosureEvent(translate) {
+        const text = '</FixedReply>';
+        const event = { choices: [{ index: 0, delta: { content: text } }] };
+        if (translate) event.delta = { text };
+        return `data: ${JSON.stringify(event)}`;
+    }
+
+    function isNaturalFinish(reason) {
+        return /^(stop|end_turn|completed)$/i.test(String(reason || ''));
+    }
+
+    function rewriteSseLine(line, options, state) {
         const match = /^(\s*data:\s?)(.*?)(\r?)$/.exec(line);
-        if (!match || !match[2] || match[2] === '[DONE]') return line;
+        if (!match || !match[2]) return line;
+
+        if (match[2] === '[DONE]') {
+            state.doneSeen = true;
+            if (options.repairFixEnvelope && isNaturalFinish(state.finishReason) && needsFixedReplyClosure(state.content)) {
+                state.repaired = true;
+                return `${makeFixedReplyClosureEvent(options.translate)}\r\n\r\n${line}`;
+            }
+            return line;
+        }
 
         try {
             const event = JSON.parse(match[2]);
+            const choice = event?.choices?.[0];
             const choiceDelta = event?.choices?.[0]?.delta;
-            if (!choiceDelta || typeof choiceDelta !== 'object') return line;
+            if (choice?.finish_reason) state.finishReason = String(choice.finish_reason);
+            if (options.repairFixEnvelope && choice?.index !== 1 && typeof choiceDelta?.content === 'string') {
+                state.content += choiceDelta.content;
+            }
+            if (!options.translate || !choiceDelta || typeof choiceDelta !== 'object') return line;
 
             if (!event.delta || typeof event.delta !== 'object') {
                 event.delta = {};
@@ -77,22 +114,26 @@
         }
     }
 
-    function translateSseResponse(response) {
+    function translateSseResponse(response, options) {
         if (!response?.body || typeof response.body.getReader !== 'function') return response;
 
         const decoder = new TextDecoder();
         const encoder = new TextEncoder();
+        const state = { content: '', finishReason: '', doneSeen: false, repaired: false };
         let buffer = '';
         const transformer = new (host.TransformStream || TransformStream)({
             transform(value, controller) {
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split('\n');
                 buffer = lines.pop() ?? '';
-                if (lines.length) controller.enqueue(encoder.encode(lines.map(rewriteSseLine).join('\n') + '\n'));
+                if (lines.length) controller.enqueue(encoder.encode(lines.map(line => rewriteSseLine(line, options, state)).join('\n') + '\n'));
             },
             flush(controller) {
                 buffer += decoder.decode();
-                if (buffer) controller.enqueue(encoder.encode(rewriteSseLine(buffer)));
+                if (buffer) controller.enqueue(encoder.encode(rewriteSseLine(buffer, options, state)));
+                if (options.repairFixEnvelope && !state.repaired && isNaturalFinish(state.finishReason) && needsFixedReplyClosure(state.content)) {
+                    controller.enqueue(encoder.encode(`${makeFixedReplyClosureEvent(options.translate)}\r\n\r\n`));
+                }
             },
         });
         const body = response.body.pipeThrough(transformer);
@@ -117,13 +158,13 @@
         async function patchedFetch(input, init) {
             const active = synchronousOracleRequest;
             let payload = null;
-            if (active && active.translate && init && typeof init.body === 'string') {
+            if (active && (active.translate || active.repairFixEnvelope) && init && typeof init.body === 'string') {
                 try { payload = JSON.parse(init.body); } catch (_) { /* ignore */ }
             }
 
             const url = typeof input === 'string' ? input : input?.url;
             const isOracleCompletionRequest = Boolean(
-                active?.translate &&
+                active && (active.translate || active.repairFixEnvelope) &&
                 payload?.stream === true &&
                 payload?.chat_completion_source === 'custom' &&
                 active.signature !== null &&
@@ -145,7 +186,10 @@
             // the SSE framing consumed by EventSourceStream. Only reject an
             // explicit non-SSE response type.
             if (contentType && !/text\/event-stream/i.test(contentType)) return response;
-            return translateSseResponse(response);
+            return translateSseResponse(response, {
+                translate: active.translate,
+                repairFixEnvelope: active.repairFixEnvelope,
+            });
         }
 
         Object.defineProperty(patchedFetch, FETCH_MARK, { value: true });
@@ -219,6 +263,7 @@
             const previous = synchronousOracleRequest;
             const active = {
                 translate: shouldTranslateCustomStream(),
+                repairFixEnvelope: isOracleCorrectionRequest(request),
                 signature: requestSignature(request),
                 previous,
             };
